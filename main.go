@@ -10,29 +10,52 @@ import (
 	"github.com/thoj/go-ircevent"
 	"crypto/tls"
 	"time"
+	"gopkg.in/yaml.v2"
 )
-
-var calendarId = ""
-var ircPassword = ""
-var ircHost = ""
-var ircNick = ""
-var ircChannel = ""
 var timeRFCFormat = "2006-01-02T15:04:00-07:00"
 var minutesBeforeNotify = 10
 
-func main() {
-	log.Println("calbot worker start")
-	IRCLoop()
+type Config struct {
+	Irc struct {
+		Host       string `yaml:"host"`
+		Nickname   string `yaml:"nickname"`
+		Password   string `yaml:"password"`
+		Channel    string `yaml:"channel"`
+	} `yaml:"irc"`
+	Calendar struct {
+		Id         string `yaml:"id"`
+		Email      string `yaml:"email"`
+	} `yaml:"calendar"`
+	StartTimeOfDay string `yaml:"start_time_of_day"`
+	NotifyInterval string `yaml:"notify_interval"`
+	parsedNotifyInterval time.Duration
 }
 
-func getTodaysEvents() []*calendar.Event {
+func main() {
+	configData, err := ioutil.ReadFile("config.yml")
+	if err != nil {
+		log.Fatalf("read file error: %s", err)
+	}
+	config := Config{}
+	err = yaml.Unmarshal(configData, &config)
+	if err != nil {
+		log.Fatalf("config parse error: %s", err)
+	}
+
+	log.Printf("%+v", config)
+
+	log.Println("calbot worker start")
+	config.IRCLoop()
+}
+
+func (c *Config) getTodaysEvents() []*calendar.Event {
 	pemData, err := ioutil.ReadFile("key.pem")
 	if err != nil {
 		log.Fatalf("read key file error: %s", err)
 	}
 
     config := &jwt.Config{
-		Email: "",
+		Email: c.Calendar.Email,
 		PrivateKey: pemData,
 		Scopes: []string{
 			"https://www.googleapis.com/auth/calendar",
@@ -53,7 +76,7 @@ func getTodaysEvents() []*calendar.Event {
 	tomorrow := today.Add(time.Hour * 24)
 	tomorrowStr := tomorrow.Format(timeRFCFormat)
 
-	eventsList := service.Events.List(calendarId)
+	eventsList := service.Events.List(c.Calendar.Id)
 	eventsList.OrderBy(`startTime`)
 	eventsList.TimeMin(todayStr)
 	eventsList.TimeMax(tomorrowStr)
@@ -66,32 +89,41 @@ func getTodaysEvents() []*calendar.Event {
 	return events.Items
 }
 
-func IRCLoop() {
-	conn := irc.IRC(ircNick, ircNick)
+func (c *Config) IRCLoop() {
+	conn := irc.IRC(c.Irc.Nickname, c.Irc.Nickname)
 	//conn.Debug = true
 	conn.UseTLS = true
-	conn.Password = ircPassword
+	conn.Password = c.Irc.Password
 	conn.TLSConfig = &tls.Config{InsecureSkipVerify: true}
 
-	err := conn.Connect(ircHost)
+	var err error
+	c.parsedNotifyInterval, err = time.ParseDuration(c.NotifyInterval)
+	if err != nil {
+		log.Fatalf(
+`notify_interval is not duration string.
+support units: "ns", "us" (or "µs"), "ms", "s", "m", "h".
+`)
+	}
+
+	err = conn.Connect(c.Irc.Host)
 	if err != nil {
 		log.Fatalf("irc connection error: %s", err)
 	}
 
 	conn.AddCallback("001", func(e *irc.Event) {
-		conn.Join(ircChannel)
+		conn.Join(c.Irc.Channel)
 		defer conn.Quit()
-		notifyLoop(conn)
+		c.notifyLoop(conn)
 	})
 
 	conn.Loop()
 }
 
-func notifyLoop(conn *irc.Connection) {
+func (c *Config) notifyLoop(conn *irc.Connection) {
 	for {
 		now := time.Now()
-		next := now.Truncate(time.Minute * 10).Add(time.Minute * 10)
-		events := getTodaysEvents()
+		next := now.Truncate(c.parsedNotifyInterval).Add(c.parsedNotifyInterval)
+		events := c.getTodaysEvents()
 		for _, event := range events {
 			startTime, err := time.Parse(timeRFCFormat, event.Start.DateTime)
 			if err != nil {
@@ -99,20 +131,20 @@ func notifyLoop(conn *irc.Connection) {
 				continue
 			}
 			if next.Unix() >= startTime.Unix() && startTime.Unix() >= time.Now().Unix() {
-				pushEvent(conn, event)
+				c.pushEvent(conn, event)
 			}
 		}
 		<- time.After(next.Sub(time.Now()))
 	}
 }
 
-func pushEvent(conn *irc.Connection, event *calendar.Event) error {
+func (c *Config) pushEvent(conn *irc.Connection, event *calendar.Event) error {
 	schedule := fmt.Sprintf("- %s (%s) created by %s\n",
 		event.Summary,
 		event.Start.DateTime,
 		event.Creator.DisplayName,
 	)
-	conn.Privmsgf(ircChannel, schedule)
+	conn.Privmsgf(c.Irc.Channel, schedule)
 
 	return nil
 }
