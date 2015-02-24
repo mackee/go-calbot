@@ -1,40 +1,53 @@
 package main
 
 import (
+	"crypto/tls"
+	"fmt"
+	"github.com/google/google-api-go-client/calendar/v3"
+	"github.com/thoj/go-ircevent"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/jwt"
-	"log"
-	"io/ioutil"
-	"github.com/google/google-api-go-client/calendar/v3"
-	"fmt"
-	"github.com/thoj/go-ircevent"
-	"crypto/tls"
-	"time"
 	"gopkg.in/yaml.v2"
+	"io/ioutil"
+	"log"
+	"os"
+	"time"
 )
+
 var timeRFCFormat = "2006-01-02T15:04:00-07:00"
 var minutesBeforeNotify = 10
 
 type Config struct {
 	Irc struct {
-		Host       string `yaml:"host"`
-		Nickname   string `yaml:"nickname"`
-		Password   string `yaml:"password"`
-		Channel    string `yaml:"channel"`
+		Host     string `yaml:"host"`
+		Nickname string `yaml:"nickname"`
+		Password string `yaml:"password"`
+		Channel  string `yaml:"channel"`
 	} `yaml:"irc"`
 	Calendar struct {
-		Id         string `yaml:"id"`
-		Email      string `yaml:"email"`
+		Id    string `yaml:"id"`
+		Email string `yaml:"email"`
 	} `yaml:"calendar"`
-	StartTimeOfDay string `yaml:"start_time_of_day"`
-	NotifyInterval string `yaml:"notify_interval"`
+	StartTimeOfDay       string `yaml:"start_time_of_day"`
+	NotifyInterval       string `yaml:"notify_interval"`
 	parsedNotifyInterval time.Duration
 }
 
 func main() {
 	configData, err := ioutil.ReadFile("config.yml")
 	if err != nil {
-		log.Fatalf("read file error: %s", err)
+		fmt.Printf(`irc:
+  host: <your irc server host>
+  channel: <irc channel>
+  nickname: <nickname>
+  password: <password>
+calendar:
+  id: <calendar id; It's like mail address>
+  email: <mail address for outh>
+notify_interval: "10m"
+start_time_of_day: "10:00:00"
+`)
+		os.Exit(1)
 	}
 	config := Config{}
 	err = yaml.Unmarshal(configData, &config)
@@ -54,8 +67,8 @@ func (c *Config) getTodaysEvents() []*calendar.Event {
 		log.Fatalf("read key file error: %s", err)
 	}
 
-    config := &jwt.Config{
-		Email: c.Calendar.Email,
+	config := &jwt.Config{
+		Email:      c.Calendar.Email,
 		PrivateKey: pemData,
 		Scopes: []string{
 			"https://www.googleapis.com/auth/calendar",
@@ -100,7 +113,7 @@ func (c *Config) IRCLoop() {
 	c.parsedNotifyInterval, err = time.ParseDuration(c.NotifyInterval)
 	if err != nil {
 		log.Fatalf(
-`notify_interval is not duration string.
+			`notify_interval is not duration string.
 support units: "ns", "us" (or "µs"), "ms", "s", "m", "h".
 `)
 	}
@@ -134,7 +147,7 @@ func (c *Config) notifyLoop(conn *irc.Connection) {
 				c.pushEvent(conn, event)
 			}
 		}
-		<- time.After(next.Sub(time.Now()))
+		<-time.After(next.Sub(time.Now()))
 	}
 }
 
@@ -148,5 +161,3 @@ func (c *Config) pushEvent(conn *irc.Connection, event *calendar.Event) error {
 
 	return nil
 }
-
-
